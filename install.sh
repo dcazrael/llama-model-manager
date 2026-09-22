@@ -169,5 +169,5 @@ case ":$PATH:" in
 esac
 
 say ""
-say "Use 'model --config' to inspect settings or 'model --setup' to change them."
+say "Use 'model config' to inspect settings or 'model setup' to change them."
 say "Run '$INSTALL_DIR/install.sh' later to install the latest repo version."
