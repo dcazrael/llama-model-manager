@@ -585,15 +585,30 @@ def choose_with_fzf(query: str | None) -> str | None:
 
 
 def model_main(argv: list[str]) -> int:
+    if argv:
+        command = argv[0].lower()
+        if command == "setup":
+            if len(argv) != 1:
+                raise LauncherError("Usage: model setup")
+            return setup_manager_config()
+        if command == "update":
+            if len(argv) != 1:
+                raise LauncherError("Usage: model update")
+            return update_manager()
+        if command == "config":
+            if len(argv) != 1:
+                raise LauncherError("Usage: model config")
+            return show_manager_config()
+
     parser = argparse.ArgumentParser(description="Select and start an explicit llama.cpp preset")
     parser.add_argument("query", nargs="?", help="initial fzf query")
     parser.add_argument("--preset", help="start/show this exact preset without fzf")
     parser.add_argument("--background", action="store_true", help="start, verify, and detach")
     parser.add_argument("--list", action="store_true", help="list explicit preset names")
     parser.add_argument("--show", action="store_true", help="print resolved parameters and argv as JSON")
-    parser.add_argument("--setup", action="store_true", help="interactively create or update manager configuration")
-    parser.add_argument("--config", action="store_true", help="show resolved manager configuration")
-    parser.add_argument("-update", "--update", action="store_true", help="update llama-model-manager from the repository")
+    parser.add_argument("--setup", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--config", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("-update", "--update", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--download",
         metavar="REPO",
