@@ -57,7 +57,7 @@ Edit it interactively:
 model --setup
 ```
 
-If `install_dir` or `bin_dir` changes, rerun `install.sh` afterward so the installed files and command links are moved to the configured location.
+If `install_dir` or `bin_dir` changes, rerun `install.sh` afterward so the configured location is used. The installer does not delete the old install directory automatically.
 
 Default configuration:
 
