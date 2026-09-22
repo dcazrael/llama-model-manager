@@ -162,6 +162,30 @@ def show_manager_config() -> int:
     return 0
 
 
+def update_manager() -> int:
+    parser = _manager_config()
+    install_dir = Path(
+        parser.get(
+            "install",
+            "install_dir",
+            fallback=DEFAULT_MANAGER_CONFIG["install"]["install_dir"],
+        )
+    ).expanduser()
+    installer = install_dir / "install.sh"
+
+    if not installer.is_file():
+        raise LauncherError(
+            f"Installed updater not found: {installer}. "
+            "Run the repository install.sh once to repair the installation."
+        )
+
+    print(f"Updating llama-model-manager via {installer}", flush=True)
+    completed = subprocess.run(["/bin/sh", str(installer)], check=False)
+    if completed.returncode:
+        raise LauncherError(f"Update failed with exit {completed.returncode}")
+    return 0
+
+
 MODELS_DIR = _config_path("paths", "models_dir", "LLAMA_MODELS_DIR")
 YAML_PATH = _config_path("paths", "presets_yaml", "LLAMA_MODELS_YAML")
 INI_PATH = _config_path("paths", "presets_ini", "LLAMA_MODELS_INI")
@@ -569,6 +593,7 @@ def model_main(argv: list[str]) -> int:
     parser.add_argument("--show", action="store_true", help="print resolved parameters and argv as JSON")
     parser.add_argument("--setup", action="store_true", help="interactively create or update manager configuration")
     parser.add_argument("--config", action="store_true", help="show resolved manager configuration")
+    parser.add_argument("-update", "--update", action="store_true", help="update llama-model-manager from the repository")
     parser.add_argument(
         "--download",
         metavar="REPO",
@@ -598,6 +623,8 @@ def model_main(argv: list[str]) -> int:
         return setup_manager_config()
     if args.config:
         return show_manager_config()
+    if args.update:
+        return update_manager()
     if args.download is not None:
         return download_model(
             args.download,
