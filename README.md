@@ -36,13 +36,7 @@ The installer creates these commands:
 After the initial install, update directly through the CLI:
 
 ```bash
-model --update
-```
-
-The shorter single-dash form is also accepted:
-
-```bash
-model -update
+model update
 ```
 
 This runs the installed updater, fetches the current `main` version, syntax-checks it, and only then replaces the installed program. Existing configuration is retained.
@@ -60,13 +54,13 @@ You can also rerun the one-line installer command; it uses the existing config a
 Show the resolved config:
 
 ```bash
-model --config
+model config
 ```
 
 Edit it interactively:
 
 ```bash
-model --setup
+model setup
 ```
 
 If `install_dir` or `bin_dir` changes, rerun `install.sh` afterward so the configured location is used. The installer does not delete the old install directory automatically.
