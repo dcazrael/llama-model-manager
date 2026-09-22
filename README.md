@@ -33,13 +33,25 @@ The installer creates these commands:
 
 ## Update
 
-Run the installed updater again:
+After the initial install, update directly through the CLI:
+
+```bash
+model --update
+```
+
+The shorter single-dash form is also accepted:
+
+```bash
+model -update
+```
+
+This runs the installed updater, fetches the current `main` version, syntax-checks it, and only then replaces the installed program. Existing configuration is retained.
+
+The underlying updater can still be run directly:
 
 ```bash
 ~/.local/share/llama-model-manager/install.sh
 ```
-
-It fetches the current `main` version, syntax-checks it, and only then replaces the installed program. Existing configuration is retained.
 
 You can also rerun the one-line installer command; it uses the existing config and therefore the existing install locations.
 
