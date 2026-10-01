@@ -3,7 +3,7 @@
 
 Reads paths and installation settings from ~/.config/llama-model-manager/config.ini.
 Daily presets default to ~/llm-workbench/configs/presets.yaml and fall back to the
-legacy ~/.config/llama.cpp/model-presets.ini when no YAML presets are found.  The loader supports a ``defaults`` section: every preset
+legacy ~/.config/llama.cpp/model-presets.ini when the YAML file is absent.  The loader supports a ``defaults`` section: every preset
 merges the defaults dict, overriding only the keys it defines.
 
 The original INI-based loader (configparser, ``[Section]`` syntax) is preserved
@@ -205,15 +205,17 @@ PRESET_ONLY_KEYS = {
     "alias", "host", "port",
 }
 SUPPORTED_KEYS = {
-    "model", "ctx-size", "parallel", "threads", "threads-batch", "n-gpu-layers", "device",
-    "split-mode", "tensor-split", "main-gpu", "flash-attn", "cache-type-k",
-    "cache-type-v", "batch-size", "ubatch-size", "n-cpu-moe", "fit",
+    "model", "mmproj", "ctx-size", "parallel", "threads", "threads-batch",
+    "n-gpu-layers", "device", "split-mode", "tensor-split", "main-gpu", "flash-attn",
+    "cache-type-k", "cache-type-v", "batch-size", "ubatch-size", "n-cpu-moe", "fit",
     "fit-target", "mmap", "no-mmap", "mlock", "repack", "no-repack",
-    "load-mode", "lazy-mode", "spec-type", "spec-draft-n-max", "model-draft",
-    "spec-draft-model", "jinja", "metrics", "slot-save-path", "server-bin",
-    "phase-aware-workspace", "live-context-workspace", "backend-sampling",
-    "decode-overlap", "decode-boundary-overlap", "ple-prefetch", "experimental-logs",
-    "moe-expert-cache-size", "moe-expert-cache-host-pinned-mb",
+    "load-mode", "lazy-mode", "cache-ram", "spec-type", "spec-draft-n-max",
+    "spec-draft-p-min", "spec-draft-backend-sampling", "model-draft", "spec-draft-model",
+    "jinja", "metrics", "slot-save-path", "server-bin", "phase-aware-workspace",
+    "live-context-workspace", "backend-sampling", "decode-overlap",
+    "decode-boundary-overlap", "ple-prefetch", "experimental-logs",
+    "moe-expert-cache-size", "moe-expert-cache-mib", "moe-expert-cache-host-pinned-mb",
+    "moe-early-router",
 }
 BOOL_FLAGS = {
     "mmap": ("--mmap", "--no-mmap"),
@@ -230,9 +232,21 @@ BOOL_FLAGS = {
     "decode-boundary-overlap": ("--decode-boundary-overlap", None),
     "ple-prefetch": ("--ple-prefetch", None),
     "experimental-logs": ("--experimental-logs", None),
+    "moe-early-router": ("--moe-early-router", None),
+    "spec-draft-backend-sampling": ("--spec-draft-backend-sampling", None),
 }
 TRUE_VALUES = {"1", "true", "on", "yes", "enabled"}
 FALSE_VALUES = {"0", "false", "off", "no", "disabled"}
+
+
+def unsupported_preset_keys(values: dict[str, str]) -> list[str]:
+    """Return unsupported preset keys while reserving env-* for process environment overrides."""
+    return sorted(
+        key for key in values
+        if key not in SUPPORTED_KEYS
+        and key not in PRESET_ONLY_KEYS
+        and not key.startswith("env-")
+    )
 
 
 class LauncherError(RuntimeError):
@@ -328,7 +342,7 @@ def _yaml_load_presets(yaml_path: Path) -> dict[str, dict[str, str]]:
         if "model" not in merged:
             raise LauncherError(f"Preset {name!r} has no model path")
         # Validate keys
-        unknown = sorted(set(merged) - SUPPORTED_KEYS - PRESET_ONLY_KEYS)
+        unknown = unsupported_preset_keys(merged)
         if unknown:
             raise LauncherError(f"Preset {name!r} has unsupported keys: {', '.join(unknown)}")
         presets[name] = merged
@@ -359,7 +373,7 @@ def _ini_load_presets(ini_path: Path) -> dict[str, dict[str, str]]:
             continue
         values = dict(global_values)
         values.update(dict(parser[name]))
-        unknown = sorted(set(values) - SUPPORTED_KEYS - PRESET_ONLY_KEYS)
+        unknown = unsupported_preset_keys(values)
         if unknown:
             raise LauncherError(f"Preset {name!r} has unsupported keys: {', '.join(unknown)}")
         if not values.get("model"):
@@ -375,20 +389,15 @@ def _ini_load_presets(ini_path: Path) -> dict[str, dict[str, str]]:
 # ---------------------------------------------------------------------------
 
 def load_presets() -> dict[str, dict[str, str]]:
-    """Load presets, trying YAML first, then legacy INI.
+    """Load YAML presets when present, otherwise fall back to the legacy INI.
 
-    YAML is preferred because it supports a ``defaults`` section that is
-    automatically inherited by every preset, making per-model overrides
-    shorter to write and easier to maintain.
+    A present but invalid YAML file is an error.  Do not hide its validation
+    failure by silently falling back to INI.
     """
-    try:
+    if YAML_PATH.is_file():
         return _yaml_load_presets(YAML_PATH)
-    except LauncherError:
-        pass
-    try:
+    if INI_PATH.is_file():
         return _ini_load_presets(INI_PATH)
-    except LauncherError:
-        pass
     raise LauncherError(
         "No presets found. Tried YAML at "
         f"{YAML_PATH} and INI at {INI_PATH}"
@@ -411,7 +420,7 @@ def argv_for_preset(name: str, values: dict[str, str]) -> list[str]:
         raise LauncherError(f"llama-server is not executable: {server_bin}")
     argv = [str(server_bin), "--host", DEFAULT_HOST, "--port", str(DEFAULT_PORT), "--alias", name]
     for key, raw_value in values.items():
-        if key in PRESET_ONLY_KEYS:
+        if key in PRESET_ONLY_KEYS or key.startswith("env-"):
             continue
         if key == "preset-name":
             continue
@@ -424,6 +433,18 @@ def argv_for_preset(name: str, values: dict[str, str]) -> list[str]:
             continue
         argv.extend([f"--{key}", raw_value])
     return argv
+
+
+def env_for_preset(values: dict[str, str]) -> dict[str, str]:
+    """Build the llama-server environment, applying env-NAME preset overrides."""
+    env = os.environ.copy()
+    for key, raw_value in values.items():
+        if key.startswith("env-"):
+            env_name = key.removeprefix("env-")
+            if not env_name:
+                raise LauncherError("Preset environment variable name cannot be empty")
+            env[env_name] = raw_value
+    return env
 
 
 def preset_description(name: str) -> dict[str, object]:
@@ -544,9 +565,16 @@ def start_preset(name: str, background: bool) -> int:
     stop_listener()
     pid_path, log_path = state_paths()
     argv = description["argv"]
+    process_env = env_for_preset(description["parameters"])
     if background:
         with log_path.open("w", encoding="utf-8") as log_handle:
-            process = subprocess.Popen(argv, stdout=log_handle, stderr=subprocess.STDOUT, start_new_session=True)
+            process = subprocess.Popen(
+                argv,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                env=process_env,
+            )
         pid_path.write_text(f"{process.pid}\n", encoding="utf-8")
         try:
             wait_until_active(name, process)
@@ -557,7 +585,7 @@ def start_preset(name: str, background: bool) -> int:
         print(json.dumps({"status": "active", "preset": name, "pid": process.pid, "url": f"http://{DEFAULT_HOST}:{DEFAULT_PORT}", "log": str(log_path)}))
         return 0
 
-    process = subprocess.Popen(argv)
+    process = subprocess.Popen(argv, env=process_env)
     pid_path.write_text(f"{process.pid}\n", encoding="utf-8")
     try:
         wait_until_active(name, process)
