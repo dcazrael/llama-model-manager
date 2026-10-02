@@ -472,20 +472,70 @@ def listener_pids(port: int = DEFAULT_PORT) -> list[int]:
     return sorted({int(pid) for pid in re.findall(r"pid=(\d+)", completed.stdout)})
 
 
-def commandline_for_pid(pid: int) -> str:
+def commandline_args_for_pid(pid: int) -> list[str]:
     try:
-        return Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
-    except FileNotFoundError:
-        return ""
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except (FileNotFoundError, PermissionError, ProcessLookupError):
+        return []
+    return [
+        part.decode(errors="replace")
+        for part in raw.split(b"\\0")
+        if part
+    ]
+
+
+def commandline_for_pid(pid: int) -> str:
+    return " ".join(commandline_args_for_pid(pid))
 
 
 def is_llama_server(pid: int) -> bool:
-    cmdline = commandline_for_pid(pid)
+    args = commandline_args_for_pid(pid)
     try:
         executable = os.readlink(f"/proc/{pid}/exe")
-    except FileNotFoundError:
+    except OSError:
         executable = ""
-    return "llama-server" in cmdline or Path(executable).name == "llama-server"
+    return (
+        Path(executable).name == "llama-server"
+        or bool(args and Path(args[0]).name == "llama-server")
+    )
+
+
+def llama_server_pids_for_port(port: int = DEFAULT_PORT) -> list[int]:
+    """Find llama-server processes configured for port, even if no longer listening.
+
+    A CUDA OOM can leave llama-server alive with NVIDIA device handles after its
+    TCP listener has disappeared. In that state ss(8) cannot find the process,
+    but /proc still can.
+    """
+    matches: list[int] = []
+    port_value = str(port)
+
+    try:
+        entries = list(Path("/proc").iterdir())
+    except OSError:
+        return matches
+
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid == os.getpid() or not is_llama_server(pid):
+            continue
+
+        args = commandline_args_for_pid(pid)
+        for index, arg in enumerate(args):
+            if (
+                arg in {"--port", "-p"}
+                and index + 1 < len(args)
+                and args[index + 1] == port_value
+            ):
+                matches.append(pid)
+                break
+            if arg == f"--port={port_value}":
+                matches.append(pid)
+                break
+
+    return sorted(set(matches))
 
 
 def pid_alive(pid: int) -> bool:
@@ -497,26 +547,70 @@ def pid_alive(pid: int) -> bool:
 
 
 def stop_listener(port: int = DEFAULT_PORT, timeout_s: int = 30) -> None:
-    pids = listener_pids(port)
-    if not pids:
-        return
-    non_llama = [pid for pid in pids if not is_llama_server(pid)]
+    listener = listener_pids(port)
+
+    # Never kill an unrelated service just because it owns the configured port.
+    non_llama = [pid for pid in listener if not is_llama_server(pid)]
     if non_llama:
         raise LauncherError(
             f"Refusing to stop non-llama process(es) listening on :{port}: {non_llama}"
         )
+
+    # CUDA OOMs can leave llama-server alive after its TCP listener disappears,
+    # retaining NVIDIA device handles and VRAM. Include those /proc-visible
+    # same-port servers in the normal cleanup path.
+    pids = sorted(set(listener) | set(llama_server_pids_for_port(port)))
+    if not pids:
+        return
+
+    stale = [pid for pid in pids if pid not in listener]
+    if stale:
+        print(
+            f"Cleaning stale llama-server process(es) for :{port}: {stale}",
+            file=sys.stderr,
+            flush=True,
+        )
+
     for pid in pids:
-        os.kill(pid, signal.SIGTERM)
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except PermissionError as exc:
+            raise LauncherError(
+                f"Cannot stop llama-server PID {pid}: permission denied"
+            ) from exc
+
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         live = [pid for pid in pids if pid_alive(pid)]
-        if not live and not listener_pids(port):
+        if not live:
             return
         time.sleep(0.25)
+
+    # A server wedged in its abort/backtrace path may ignore SIGTERM. Do not
+    # leave it holding VRAM indefinitely.
+    live = [pid for pid in pids if pid_alive(pid)]
+    for pid in live:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except PermissionError as exc:
+            raise LauncherError(
+                f"Cannot force-stop llama-server PID {pid}: permission denied"
+            ) from exc
+
+    force_deadline = time.monotonic() + 2
+    while time.monotonic() < force_deadline:
+        live = [pid for pid in pids if pid_alive(pid)]
+        if not live:
+            return
+        time.sleep(0.1)
+
     live = [pid for pid in pids if pid_alive(pid)]
     if live:
-        raise LauncherError(f"llama-server did not stop within {timeout_s}s: {live}")
-
+        raise LauncherError(f"llama-server did not stop after SIGKILL: {live}")
 
 def http_get(path: str, timeout_s: int = 10) -> object:
     with urllib.request.urlopen(f"http://127.0.0.1:{DEFAULT_PORT}{path}", timeout=timeout_s) as response:
