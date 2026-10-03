@@ -135,14 +135,29 @@ fetch_to() {
 }
 
 say "Fetching latest llama-model-manager..."
+mkdir -p "$TMP_DIR/llama_model_manager"
 fetch_to "$RAW_BASE/llama-model-manager.py" "$TMP_DIR/llama-model-manager.py"
 fetch_to "$RAW_BASE/install.sh" "$TMP_DIR/install.sh"
+fetch_to "$RAW_BASE/llama_model_manager/__init__.py" "$TMP_DIR/llama_model_manager/__init__.py"
+fetch_to "$RAW_BASE/llama_model_manager/ui.py" "$TMP_DIR/llama_model_manager/ui.py"
+fetch_to "$RAW_BASE/llama_model_manager/server_logs.py" "$TMP_DIR/llama_model_manager/server_logs.py"
+fetch_to "$RAW_BASE/llama_model_manager/telemetry.py" "$TMP_DIR/llama_model_manager/telemetry.py"
 
-python3 -m py_compile "$TMP_DIR/llama-model-manager.py" || fail "downloaded Python file failed syntax check"
+python3 -m py_compile \
+    "$TMP_DIR/llama-model-manager.py" \
+    "$TMP_DIR/llama_model_manager/__init__.py" \
+    "$TMP_DIR/llama_model_manager/ui.py" \
+    "$TMP_DIR/llama_model_manager/server_logs.py" \
+    "$TMP_DIR/llama_model_manager/telemetry.py" \
+    || fail "downloaded Python files failed syntax check"
 
-mkdir -p "$INSTALL_DIR" "$BIN_DIR"
+mkdir -p "$INSTALL_DIR" "$BIN_DIR" "$INSTALL_DIR/llama_model_manager"
 install -m 0755 "$TMP_DIR/llama-model-manager.py" "$INSTALL_DIR/llama-model-manager.py"
 install -m 0755 "$TMP_DIR/install.sh" "$INSTALL_DIR/install.sh"
+install -m 0644 "$TMP_DIR/llama_model_manager/__init__.py" "$INSTALL_DIR/llama_model_manager/__init__.py"
+install -m 0644 "$TMP_DIR/llama_model_manager/ui.py" "$INSTALL_DIR/llama_model_manager/ui.py"
+install -m 0644 "$TMP_DIR/llama_model_manager/server_logs.py" "$INSTALL_DIR/llama_model_manager/server_logs.py"
+install -m 0644 "$TMP_DIR/llama_model_manager/telemetry.py" "$INSTALL_DIR/llama_model_manager/telemetry.py"
 
 MODEL_LINK="$BIN_DIR/model"
 BENCH_LINK="$BIN_DIR/llama-benchmark"
