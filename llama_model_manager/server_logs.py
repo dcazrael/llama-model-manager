@@ -109,6 +109,17 @@ class LlamaServerLogFormatter:
         self.ui.event("success", f"Active preset: {preset}", url)
         self.ui.line(f"  {self.ui.styled('Log'.ljust(12), 'dim')}  {log_path}")
 
+    def formatter_failed(self, exc: Exception) -> None:
+        if self.raw_output:
+            return
+        self.ui.clear_live()
+        self.ui.event(
+            "warning",
+            "Log formatter failed; switching to raw output",
+            f"{type(exc).__name__}: {exc}",
+        )
+        self.raw_output = True
+
     def _stats(self, task: int | None = None) -> RequestStats | None:
         task = self.current_task if task is None else task
         if task is None or task < 0:
@@ -120,7 +131,8 @@ class LlamaServerLogFormatter:
     def _warning_or_error(self, text: str) -> bool:
         lower = text.lower()
         severe = (
-            "cuda error" in lower
+            re.search(r"^\S+\s+E\s+", text) is not None
+            or "cuda error" in lower
             or "out of memory" in lower
             or "fatal error" in lower
             or "assertion" in lower
@@ -201,7 +213,7 @@ class LlamaServerLogFormatter:
             hit_rate = hits / total * 100.0 if total else 0.0
             rows.append((
                 "MoE reuse",
-                f"{_human_int(hits)} hits · {_human_int(misses)} misses · {hit_rate:.1f}%",
+                f"cumulative · {_human_int(hits)} hits · {_human_int(misses)} misses · {hit_rate:.1f}%",
             ))
 
         health_keys = ("fallback", "rollback", "prepare_error", "finish_error", "required_unsupported")
@@ -440,4 +452,9 @@ class ServerLogPump:
             for line in self.process.stdout:
                 handle.write(line)
                 handle.flush()
-                self.formatter.handle(line)
+                try:
+                    self.formatter.handle(line)
+                except Exception as exc:
+                    # Never let presentation code stop draining llama-server's
+                    # pipe. A blocked stdout pipe can stall the server itself.
+                    self.formatter.formatter_failed(exc)
