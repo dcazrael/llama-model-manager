@@ -741,6 +741,59 @@ def start_preset(
     ui.line(ui.styled(f"MODEL  {ui.symbols['divider']}  {name}", "bold"))
     ui.line(ui.styled(model_path.name, "dim"))
     ui.line()
+
+    parameters = description["parameters"]
+    settings = [
+        ("Context", str(parameters.get("ctx-size", "default"))),
+        (
+            "KV cache",
+            f"{parameters.get('cache-type-k', 'default')} / "
+            f"{parameters.get('cache-type-v', 'default')}",
+        ),
+        (
+            "Batch / ubatch",
+            f"{parameters.get('batch-size', 'default')} / "
+            f"{parameters.get('ubatch-size', 'default')}",
+        ),
+        ("Flash attention", str(parameters.get("flash-attn", "default"))),
+        (
+            "MoE cache",
+            (
+                f"{parameters.get('moe-expert-cache-mib')} MiB"
+                if parameters.get("moe-expert-cache-mib")
+                else str(parameters.get("moe-expert-cache-size", "disabled"))
+            ),
+        ),
+        (
+            "Speculation",
+            (
+                f"{parameters.get('spec-type', 'none')}"
+                + (
+                    f" · max {parameters.get('spec-draft-n-max')}"
+                    if parameters.get("spec-draft-n-max")
+                    else ""
+                )
+            ),
+        ),
+    ]
+    if parameters.get("mmproj"):
+        settings.append(("Vision", Path(str(parameters["mmproj"])).name))
+    ui.rows("SETTINGS", settings)
+
+    gpus = gpu_snapshot()
+    if gpus:
+        ui.line()
+        hardware = []
+        for gpu in gpus:
+            try:
+                total = float(gpu["memory_total_mib"]) / 1024
+                memory = f"{total:.2f} GiB"
+            except (KeyError, TypeError, ValueError):
+                memory = "VRAM unknown"
+            hardware.append((f"CUDA{gpu.get('index', '?')}", f"{gpu.get('name', 'GPU')} · {memory}"))
+        ui.rows("HARDWARE", hardware)
+
+    ui.line()
     ui.event("active", "Starting llama-server", f"http://{DEFAULT_HOST}:{DEFAULT_PORT}")
 
     process = subprocess.Popen(
