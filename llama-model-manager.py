@@ -31,6 +31,50 @@ import time
 import urllib.error
 import urllib.request
 
+# Split implementation modules live beside this script in the installed
+# directory. Resolve symlinks so invoking ~/.local/bin/model still finds them.
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+
+
+def _load_split_modules():
+    try:
+        from llama_model_manager.server_logs import LlamaServerLogFormatter, ServerLogPump
+        from llama_model_manager.telemetry import ResourceSampler, gpu_snapshot
+        from llama_model_manager.ui import TerminalUI
+        return LlamaServerLogFormatter, ServerLogPump, ResourceSampler, gpu_snapshot, TerminalUI
+    except ModuleNotFoundError as exc:
+        # One-time compatibility bridge for installations updated by the old
+        # two-file installer. That installer can fetch this new main program and
+        # new install.sh but not the package files. Re-run the newly installed
+        # updater once, then replace this process.
+        if not (exc.name or "").startswith("llama_model_manager"):
+            raise
+        installer = _SCRIPT_DIR / "install.sh"
+        if not installer.is_file() or os.environ.get("LLAMA_MODEL_MANAGER_BOOTSTRAP") == "1":
+            raise
+        env = os.environ.copy()
+        env["LLAMA_MODEL_MANAGER_BOOTSTRAP"] = "1"
+        completed = subprocess.run(["/bin/sh", str(installer)], env=env, check=False)
+        if completed.returncode:
+            raise
+        os.execve(
+            sys.executable,
+            [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]],
+            env,
+        )
+        raise RuntimeError("unreachable")
+
+
+(
+    LlamaServerLogFormatter,
+    ServerLogPump,
+    ResourceSampler,
+    gpu_snapshot,
+    TerminalUI,
+) = _load_split_modules()
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -651,7 +695,14 @@ def state_paths() -> tuple[Path, Path]:
     return STATE_DIR / "server.pid", STATE_DIR / "server.log"
 
 
-def start_preset(name: str, background: bool) -> int:
+def start_preset(
+    name: str,
+    background: bool,
+    *,
+    raw_output: bool = False,
+    no_color: bool = False,
+    plain: bool = False,
+) -> int:
     description = preset_description(name)
     model_path = Path(description["model_path"])
     if not model_path.is_file():
@@ -660,6 +711,7 @@ def start_preset(name: str, background: bool) -> int:
     pid_path, log_path = state_paths()
     argv = description["argv"]
     process_env = env_for_preset(description["parameters"])
+
     if background:
         with log_path.open("w", encoding="utf-8") as log_handle:
             process = subprocess.Popen(
@@ -676,22 +728,70 @@ def start_preset(name: str, background: bool) -> int:
             if process.poll() is None:
                 process.terminate()
             raise
-        print(json.dumps({"status": "active", "preset": name, "pid": process.pid, "url": f"http://{DEFAULT_HOST}:{DEFAULT_PORT}", "log": str(log_path)}))
+        print(json.dumps({
+            "status": "active",
+            "preset": name,
+            "pid": process.pid,
+            "url": f"http://{DEFAULT_HOST}:{DEFAULT_PORT}",
+            "log": str(log_path),
+        }))
         return 0
 
-    process = subprocess.Popen(argv, env=process_env)
+    ui = TerminalUI(no_color=no_color, plain=plain, raw_output=raw_output)
+    ui.line(ui.styled(f"MODEL  {ui.symbols['divider']}  {name}", "bold"))
+    ui.line(ui.styled(model_path.name, "dim"))
+    ui.line()
+    ui.event("active", "Starting llama-server", f"http://{DEFAULT_HOST}:{DEFAULT_PORT}")
+
+    process = subprocess.Popen(
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        env=process_env,
+    )
     pid_path.write_text(f"{process.pid}\n", encoding="utf-8")
+
+    formatter = LlamaServerLogFormatter(ui, raw_output=raw_output)
+    pump = ServerLogPump(process, log_path, formatter)
+    pump.start()
+
     try:
         wait_until_active(name, process)
-        print(f"Active preset: {name} on http://{DEFAULT_HOST}:{DEFAULT_PORT}", flush=True)
-        return process.wait()
+        formatter.server_ready(
+            name,
+            f"http://{DEFAULT_HOST}:{DEFAULT_PORT}",
+            log_path,
+        )
+        returncode = process.wait()
+        pump.join(timeout=2)
+        ui.clear_live()
+        if returncode:
+            ui.event("failure", "llama-server exited", f"code {returncode}")
+        else:
+            ui.event("info", "llama-server stopped")
+        return returncode
     except KeyboardInterrupt:
+        ui.clear_live()
         process.terminate()
-        return process.wait()
+        returncode = process.wait()
+        pump.join(timeout=2)
+        return returncode
+    except Exception:
+        ui.clear_live()
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        pump.join(timeout=2)
+        raise
     finally:
         if process.poll() is not None:
             pid_path.unlink(missing_ok=True)
-
 
 def choose_with_fzf(query: str | None) -> str | None:
     names = list(load_presets())
@@ -726,6 +826,22 @@ def model_main(argv: list[str]) -> int:
     parser.add_argument("query", nargs="?", help="initial fzf query")
     parser.add_argument("--preset", help="start/show this exact preset without fzf")
     parser.add_argument("--background", action="store_true", help="start, verify, and detach")
+    parser.add_argument(
+        "--raw-output", "--raw",
+        dest="raw_output",
+        action="store_true",
+        help="show the unfiltered llama-server stream in the foreground",
+    )
+    parser.add_argument(
+        "--no-color",
+        action="store_true",
+        help="disable ANSI colors in formatted foreground output",
+    )
+    parser.add_argument(
+        "--plain",
+        action="store_true",
+        help="disable live-line terminal updates while keeping formatted output",
+    )
     parser.add_argument("--list", action="store_true", help="list explicit preset names")
     parser.add_argument("--show", action="store_true", help="print resolved parameters and argv as JSON")
     parser.add_argument("--setup", action="store_true", help=argparse.SUPPRESS)
@@ -787,7 +903,13 @@ def model_main(argv: list[str]) -> int:
         name = choose_with_fzf(args.query)
         if not name:
             return 0
-    return start_preset(name, args.background)
+    return start_preset(
+        name,
+        args.background,
+        raw_output=args.raw_output,
+        no_color=args.no_color,
+        plain=args.plain,
+    )
 
 
 def parse_bool(value: str) -> bool:
@@ -802,87 +924,6 @@ def parse_bool(value: str) -> bool:
 def command_output(args: list[str]) -> str:
     completed = run(args, capture_output=True)
     return "\n".join(part for part in (completed.stdout.strip(), completed.stderr.strip()) if part)
-
-
-def gpu_snapshot() -> list[dict[str, str]]:
-    query = "index,pci.bus_id,name,driver_version,memory.total,memory.used"
-    completed = run(["nvidia-smi", f"--query-gpu={query}", "--format=csv,noheader,nounits"], capture_output=True)
-    if completed.returncode:
-        return []
-    keys = ["index", "pci_bus_id", "name", "driver_version", "memory_total_mib", "memory_used_mib"]
-    output = []
-    for line in completed.stdout.splitlines():
-        values = [part.strip() for part in line.split(",")]
-        if len(values) == len(keys):
-            output.append(dict(zip(keys, values)))
-    return output
-
-
-def process_rss_kib(pid: int | None) -> int | None:
-    if not pid:
-        return None
-    try:
-        for line in Path(f"/proc/{pid}/status").read_text().splitlines():
-            if line.startswith("VmRSS:"):
-                return int(line.split()[1])
-    except FileNotFoundError:
-        return None
-    return None
-
-
-def active_pid() -> int | None:
-    pid_path, _ = state_paths()
-    try:
-        pid = int(pid_path.read_text().strip())
-    except (FileNotFoundError, ValueError):
-        return None
-    return pid if pid_alive(pid) else None
-
-
-class ResourceSampler:
-    def __init__(self, pid: int | None, period_s: float = 0.5) -> None:
-        self.pid = pid
-        self.period_s = period_s
-        self.samples: list[dict[str, object]] = []
-        self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._sample_loop, daemon=True)
-
-    def take_sample(self) -> None:
-        self.samples.append({
-            "monotonic_s": time.monotonic(),
-            "gpus": gpu_snapshot(),
-            "rss_kib": process_rss_kib(self.pid),
-        })
-
-    def _sample_loop(self) -> None:
-        while not self._stop.is_set():
-            self.take_sample()
-            self._stop.wait(self.period_s)
-
-    def start(self) -> None:
-        self.take_sample()
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._stop.set()
-        self._thread.join(timeout=self.period_s + 2)
-        self.take_sample()
-
-    def peak(self) -> dict[str, object]:
-        gpu_peaks: dict[str, int] = {}
-        for sample in self.samples:
-            for gpu in sample["gpus"]:
-                try:
-                    used = int(gpu["memory_used_mib"])
-                except (KeyError, ValueError):
-                    continue
-                gpu_peaks[gpu["index"]] = max(gpu_peaks.get(gpu["index"], 0), used)
-        rss = [sample["rss_kib"] for sample in self.samples if sample["rss_kib"] is not None]
-        return {
-            "sample_count": len(self.samples),
-            "gpu_vram_peak_mib_by_index": gpu_peaks,
-            "server_rss_peak_kib": max(rss) if rss else None,
-        }
 
 
 def prometheus_metrics() -> dict[str, float]:
