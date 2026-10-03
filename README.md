@@ -2,7 +2,7 @@
 
 Personal Linux CLI for managing explicit `llama.cpp` model presets, downloading and staging GGUF models from Hugging Face, launching `llama-server`, and running reproducible benchmarks.
 
-The project is intentionally small: one Python program, one installer/updater, and a user-owned config file outside the repository.
+The project is intentionally small: a thin CLI entry point, a few dependency-free support modules, one installer/updater, and a user-owned config file outside the repository.
 
 ## Install
 
@@ -123,6 +123,24 @@ Start an exact preset:
 model --preset Qwen3.8-Flash-Next
 ```
 
+Foreground launches use a compact colored status view instead of dumping the full
+`llama-server` diagnostic stream. Request timing, MTP acceptance, MoE cache
+occupancy/reuse, warnings, and failures are summarized while the complete raw
+stream is still written to the launcher state log.
+
+Show the original unfiltered foreground stream when debugging:
+
+```bash
+model --preset Qwen3.8-Flash-Next --raw
+```
+
+Disable ANSI colors or live-line updates when needed:
+
+```bash
+model --preset Qwen3.8-Flash-Next --no-color
+model --preset Qwen3.8-Flash-Next --plain
+```
+
 Run it in the background:
 
 ```bash
@@ -173,7 +191,21 @@ Used by specific features:
 - `nvidia-smi` for NVIDIA GPU benchmark telemetry
 - `ss` for safe listener detection
 
-The Python program itself uses only the standard library.
+The Python code uses only the standard library.
+
+## Source layout
+
+```text
+llama-model-manager.py        # CLI, preset handling, downloads, benchmark orchestration
+llama_model_manager/
+  ui.py                       # terminal colors/layout, adapted from llm-lab
+  server_logs.py              # llama-server stream parser and foreground formatter
+  telemetry.py                # NVIDIA/process sampling used by benchmark commands
+install.sh                    # installer/updater
+```
+
+The split keeps terminal rendering and verbose server-log parsing out of the
+already-large command module.
 
 ## Safety behavior
 
