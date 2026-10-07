@@ -249,7 +249,7 @@ PRESET_ONLY_KEYS = {
     "alias", "host", "port",
 }
 SUPPORTED_KEYS = {
-    "model", "mmproj", "ctx-size", "parallel", "threads", "threads-batch",
+    "model", "mmproj", "mmproj-offload", "ctx-size", "parallel", "threads", "threads-batch",
     "n-gpu-layers", "device", "split-mode", "tensor-split", "main-gpu", "flash-attn",
     "cache-type-k", "cache-type-v", "batch-size", "ubatch-size", "n-cpu-moe", "fit",
     "fit-target", "mmap", "no-mmap", "mlock", "repack", "no-repack",
@@ -278,6 +278,7 @@ BOOL_FLAGS = {
     "experimental-logs": ("--experimental-logs", None),
     "moe-early-router": ("--moe-early-router", None),
     "spec-draft-backend-sampling": ("--spec-draft-backend-sampling", None),
+    "mmproj-offload": ("--mmproj-offload", "--no-mmproj-offload"),
 }
 TRUE_VALUES = {"1", "true", "on", "yes", "enabled"}
 FALSE_VALUES = {"0", "false", "off", "no", "disabled"}
